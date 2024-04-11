@@ -1,0 +1,17 @@
+name: Build keycloak-rest-repo
+
+on:
+  push:
+    branches:
+    - main
+    paths:
+      - "plugins/keycloak-rest-repo/**"
+  workflow_dispatch:
+
+jobs:
+  build-artifact:
+    uses: ./.github/workflows/build.yml
+    with:
+      workdir: ./plugins/keycloak-rest-repo
+    secrets:
+      token: ${{ secrets.ACTIONS_TOKEN_ORG }}

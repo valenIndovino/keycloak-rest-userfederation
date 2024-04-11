@@ -1,0 +1,1 @@
+# Aqui se alojan todas las extensiones de Keycloak
