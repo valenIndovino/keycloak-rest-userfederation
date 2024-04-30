@@ -11,7 +11,7 @@ services:
       KEYCLOAK_ADMIN_PASSWORD: admin
       JAVA_OPTS_APPEND: -Dkeycloak.profile.feature.admin2=disabled
     volumes:
-      - ./plugin/target/keycloak-rest-repo.jar:/opt/keycloak/providers/keycloak-rest-repo.jar
+      - ./plugins/keycloak-rest-user/target/keycloak-rest-repo.jar:/opt/keycloak/providers/keycloak-rest-repo.jar
       - ./startup-scripts/:/opt/jboss/startup-scripts/
       - ./custom-scripts/:/opt/jboss/custom-scripts/
       - ./objects/:/opt/jboss/keycloak/objects/

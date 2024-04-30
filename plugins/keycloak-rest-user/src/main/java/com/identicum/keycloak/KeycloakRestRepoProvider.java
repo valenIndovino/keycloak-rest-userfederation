@@ -1,5 +1,10 @@
 package com.identicum.keycloak;
 
+import com.google.auto.service.AutoService;
+
+import org.keycloak.component.ComponentValidationException;
+import org.keycloak.Config.Scope;
+import org.keycloak.common.util.MultivaluedHashMap;
 import org.jboss.logging.Logger;
 import org.keycloak.component.ComponentModel;
 import org.keycloak.credential.CredentialInput;
@@ -18,23 +23,37 @@ import org.keycloak.storage.user.UserRegistrationProvider;
 
 import jakarta.json.JsonArray;
 import jakarta.json.JsonObject;
+
 import java.util.HashMap;
 import java.util.HashSet;
+import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.stream.IntStream;
 import java.util.stream.Stream;
 
-import static com.identicum.keycloak.RestUserAdapter.randomPassword;
 import static org.jboss.logging.Logger.getLogger;
 import static org.keycloak.models.credential.PasswordCredentialModel.TYPE;
 
+import org.keycloak.provider.ProviderConfigProperty;
+import org.keycloak.provider.ProviderConfigurationBuilder;
+import org.keycloak.storage.UserStorageProviderFactory;
+
+import static com.identicum.keycloak.Configuration.API_CONNECTION_REQUEST_TIMEOUT;
+import static com.identicum.keycloak.Configuration.API_CONNECT_TIMEOUT;
+import static com.identicum.keycloak.Configuration.API_SOCKET_TIMEOUT;
+import static com.identicum.keycloak.Configuration.PROPERTY_BASE_URL;
+import static com.identicum.keycloak.Configuration.PROPERTY_MAX_HTTP_CONNECTIONS;
+import static com.identicum.keycloak.Configuration.validate;
+import static org.jboss.logging.Logger.getLogger;
+import static org.keycloak.provider.ProviderConfigProperty.LIST_TYPE;
+import static org.keycloak.provider.ProviderConfigProperty.PASSWORD;
+import static org.keycloak.provider.ProviderConfigProperty.STRING_TYPE;
+
 public class KeycloakRestRepoProvider implements CredentialInputValidator,
-												 CredentialInputUpdater,
 												 UserStorageProvider,
 												 UserLookupProvider,
-												 UserQueryProvider,
-												 UserRegistrationProvider {
+												 UserQueryProvider {
 
 	private static final Logger logger = getLogger(KeycloakRestRepoProvider.class);
 
@@ -75,7 +94,7 @@ public class KeycloakRestRepoProvider implements CredentialInputValidator,
 		return this.getUser(username, realm);
 	}
 
-	public UserModel getUser(String query, RealmModel realm) {
+	private UserModel getUser(String query, RealmModel realm) {
 		logger.debugv("Cache size is: {0}", loadedUsers.size());
 
 		RestUserAdapter adapter = loadedUsers.get(query);
@@ -118,44 +137,8 @@ public class KeycloakRestRepoProvider implements CredentialInputValidator,
 	}
 
 	@Override
-	public boolean updateCredential(RealmModel realmModel, UserModel userModel, CredentialInput credentialInput) {
-		restHandler.setUserAttribute(userModel.getUsername(), "password", credentialInput.getChallengeResponse());
-		return true;
-	}
-
-	@Override
-	public void disableCredentialType(RealmModel realmModel, UserModel userModel, String credentialType) {
-		if (!supportsCredentialType(credentialType)) return;
-		restHandler.setUserAttribute(userModel.getUsername(), "password", randomPassword());
-	}
-
-	@Override
-	public Stream<String> getDisableableCredentialTypesStream(RealmModel realmModel, UserModel userModel) {
-		Set<String> set = new HashSet<>();
-		set.add(TYPE);
-		return set.stream();
-	}
-
-	@Override
 	public int getUsersCount(RealmModel realmModel) {
 		return 0;
-	}
-
-	@Override
-	public UserModel addUser(RealmModel realmModel, String username) {
-		JsonObject user = restHandler.createUser(username);
-		RestUserAdapter adapter = new RestUserAdapter(session, realmModel, model, user);
-		adapter.setHandler(restHandler);
-		logger.infov("Setting user {0} into cache", username);
-		loadedUsers.put(username, adapter);
-		return adapter;
-	}
-
-	@Override
-	public boolean removeUser(RealmModel realmModel, UserModel userModel) {
-		restHandler.deleteUser(userModel.getUsername());
-		loadedUsers.remove(userModel.getUsername());
-		return true;
 	}
 
 	@Override
@@ -185,4 +168,76 @@ public class KeycloakRestRepoProvider implements CredentialInputValidator,
 					return userModel;
 				});
 	}
+
+	@AutoService(UserStorageProviderFactory.class)
+	public static class KeycloakRestRepoProviderFactory implements UserStorageProviderFactory<KeycloakRestRepoProvider> {
+	
+		private static final Logger logger = getLogger(KeycloakRestRepoProviderFactory.class);
+		private List<ProviderConfigProperty> configMetadata;
+		private MultivaluedHashMap<String, String> lastConfiguration = null;
+	
+		private RestHandler restHandler;
+	
+		@Override
+		public void init(Scope config) {
+			logger.infov("Initializing Keycloak Rest Repo factory version: " + getClass().getPackage().getImplementationVersion());
+	
+			ProviderConfigurationBuilder builder = ProviderConfigurationBuilder.create();
+			builder.property().name(PROPERTY_BASE_URL)
+					.type(STRING_TYPE).label("Base URL")
+					.defaultValue("http://rest-users-api:8081/")
+					.helpText("Api url base to authenticate users")
+					.add();
+			builder.property().name(PROPERTY_MAX_HTTP_CONNECTIONS)
+					.type(STRING_TYPE).label("Max pool connections")
+					.defaultValue("5")
+					.helpText("Max http connections in pool")
+					.add();
+			builder.property().name(API_SOCKET_TIMEOUT)
+					.type(STRING_TYPE).label("API Socket Timeout")
+					.defaultValue("1000")
+					.helpText("Max time [milliseconds] to wait for response")
+					.add();
+			builder.property().name(API_CONNECT_TIMEOUT)
+					.type(STRING_TYPE).label("API Connect Timeout")
+					.defaultValue("1000")
+					.helpText("Max time [milliseconds] to establish the connection")
+					.add();
+			builder.property().name(API_CONNECTION_REQUEST_TIMEOUT)
+					.type(STRING_TYPE).label("API Connection Request Timeout")
+					.defaultValue("1000")
+					.helpText("Max time [milliseconds] to wait until a connection in the pool is assigned to the requesting thread")
+					.add();
+			configMetadata = builder.build();
+		}
+	
+		@Override
+		public KeycloakRestRepoProvider create(KeycloakSession session, ComponentModel model) {
+			if(restHandler == null || !model.getConfig().equals( lastConfiguration )) {
+				logger.infov("Creating a new instance of restHandler");
+				Configuration configuration = new Configuration(model.getConfig());
+				restHandler = new RestHandler(configuration);
+				lastConfiguration = model.getConfig();
+			} else {
+				logger.infov("RestHandler already instantiated");
+			}
+			return new KeycloakRestRepoProvider(session, model, restHandler);
+		}
+	
+		@Override
+		public String getId() {
+			return "rest-repo-provider";
+		}
+	
+		@Override
+		public List<ProviderConfigProperty> getConfigProperties() {
+			return configMetadata;
+		}
+	
+		@Override
+		public void validateConfiguration(KeycloakSession session, RealmModel realm, ComponentModel config) throws ComponentValidationException {
+			validate(config.getConfig());
+		}
+	}
+
 }

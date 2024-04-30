@@ -7,6 +7,7 @@ import org.keycloak.models.RealmModel;
 import org.keycloak.storage.adapter.AbstractUserAdapterFederatedStorage;
 
 import jakarta.json.JsonObject;
+
 import java.util.List;
 import java.util.Random;
 
@@ -111,20 +112,4 @@ public class RestUserAdapter extends AbstractUserAdapterFederatedStorage {
 	public void setEmailVerified(boolean verified) {
 		logger.infov("Setting email verified: {0}", verified);
 	}
-
-	public static String randomPassword() {
-		int leftLimit = 48; // numeral '0'
-		int rightLimit = 122; // letter 'z'
-		int targetStringLength = 10;
-		Random random = new Random();
-
-		String generatedString = random.ints(leftLimit, rightLimit + 1)
-				.filter(i -> (i <= 57 || i >= 65) && (i <= 90 || i >= 97))
-				.limit(targetStringLength)
-				.collect(StringBuilder::new, StringBuilder::appendCodePoint, StringBuilder::append)
-				.toString();
-		logger.infov("Generated random string: {0}", generatedString);
-		return generatedString;
-	}
-
 }

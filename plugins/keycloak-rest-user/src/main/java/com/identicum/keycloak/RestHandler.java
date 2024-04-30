@@ -27,12 +27,11 @@ import org.keycloak.models.utils.FormMessage;
 import jakarta.json.JsonArray;
 import jakarta.json.JsonObject;
 import jakarta.json.JsonObjectBuilder;
+
 import java.io.IOException;
 import java.net.SocketTimeoutException;
 import java.util.*;
 
-import static com.identicum.keycloak.RestConfiguration.AUTH_OAUTH;
-import static com.identicum.keycloak.RestUserAdapter.randomPassword;
 import static java.lang.Boolean.TRUE;
 import static java.lang.String.format;
 import static java.lang.System.currentTimeMillis;
@@ -54,16 +53,12 @@ public class RestHandler {
 	private static final Logger logger = getLogger(RestHandler.class);
 	protected CloseableHttpClient httpClient;
 
-	private final RestConfiguration configuration;
+	private final Configuration configuration;
 	private final PoolingHttpClientConnectionManager poolingHttpClientConnectionManager;
 
-	private String basicToken;
-	private String accessToken;
-	private String refreshToken;
-	private Date tokenExpiresAt;
 	private final String BACKEND_AUTHENTICATION_ERROR = "BACKEND_AUTHENTICATION_ERROR";
 
-	public RestHandler(RestConfiguration configuration) {
+	public RestHandler(Configuration configuration) {
 		Integer maxConnections = configuration.getMaxConnections();
 		Integer socketTimeout = configuration.getApiSocketTimeout();
 		Integer connectTimeout = configuration.getApiConnectTimeout();
@@ -106,7 +101,7 @@ public class RestHandler {
 
 	public JsonObject findUserByUsername(String username) {
 		logger.infov("Finding user by username: {0}", username);
-		SimpleHttpResponse response = executeSecuredCall(new HttpGet(configuration.getBaseUrl() + "/users/" + username));
+		SimpleHttpResponse response = executeCall(new HttpGet(configuration.getBaseUrl() + "/users/" + username));
 		return response.isSuccess()? response.getResponseAsJsonObject() : null;
 	}
 
@@ -121,7 +116,7 @@ public class RestHandler {
 		HttpEntity httpEntity = new ByteArrayEntity(requestJson.toString().getBytes());
 		httpPatch.setEntity(httpEntity);
 
-		stopOnError(executeSecuredCall(httpPatch));
+		stopOnError(executeCall(httpPatch));
 	}
 
 	public Map<String, Integer> getStats() {
@@ -142,38 +137,9 @@ public class RestHandler {
 			searchUrl += "?username=" + username;
 		}
 		logger.infov("Using url {0} to search users", searchUrl);
-		SimpleHttpResponse response = executeSecuredCall(new HttpGet(searchUrl));
+		SimpleHttpResponse response = executeCall(new HttpGet(searchUrl));
 		stopOnError(response);
 		return response.getResponseAsJsonArray();
-	}
-
-	public JsonObject createUser(String username) {
-		logger.infov("Creating user {0}", username);
-
-		HttpPost httpPost = new HttpPost(configuration.getBaseUrl() + "/users");
-		httpPost.setHeader(CONN_DIRECTIVE, CONN_KEEP_ALIVE);
-		httpPost.setHeader(CONTENT_TYPE, APPLICATION_JSON.getMimeType());
-
-		JsonObjectBuilder builder = createObjectBuilder();
-		builder.add("username", username);
-		builder.add("email", "temporary@localhost.com");
-		builder.add("firstName", "TempFirstName");
-		builder.add("lastName", "TempLastName");
-		builder.add("password", randomPassword());
-		builder.add("active", TRUE);
-
-		JsonObject requestJson = builder.build();
-		logger.infov("Setting create body as: {0}", requestJson.toString());
-		httpPost.setEntity(new ByteArrayEntity(requestJson.toString().getBytes()));
-
-		SimpleHttpResponse response = executeSecuredCall(httpPost);
-		stopOnError(response);
-		return response.getResponseAsJsonObject();
-	}
-
-	public void deleteUser(String username) {
-		logger.infov("Deleting user {0}", username);
-		stopOnError( executeSecuredCall(new HttpDelete(configuration.getBaseUrl() + "/users/" + username)));
 	}
 
 	/* ------------------------------------------------------------------------ */
@@ -191,25 +157,6 @@ public class RestHandler {
 			} catch (IOException io) {
 				logger.warn("Error closing http response", io);
 			}
-	}
-
-	/**
-	 * Execute http request throw the executeCall but adding custom Http Headers to include
-	 * authorization credentials.
-	 *
-	 * @param request Http request to be executed
-	 * @return SimpleHttpResponse with status code and response body
-	 */
-	private SimpleHttpResponse executeSecuredCall(HttpRequestBase request) {
-		switch (configuration.getAuthType()) {
-			case AUTH_OAUTH:
-				request.setHeader(AUTHORIZATION, "Bearer " + getAccessToken());
-				break;
-			case RestConfiguration.AUTH_BASIC:
-				request.setHeader(AUTHORIZATION, "Basic " + getBasicAuthenticationToken());
-				break;
-		}
-		return executeCall(request);
 	}
 
 	/**
@@ -252,76 +199,6 @@ public class RestHandler {
 		finally {
 			closeQuietly(response);
 		}
-	}
-
-	private String getBasicAuthenticationToken() {
-		if(basicToken == null) {
-			this.basicToken = configuration.getBasicUsername() + ":" + configuration.getBasicPassword();
-			this.basicToken = Base64.getEncoder().encodeToString( basicToken.getBytes() );
-		}
-		return basicToken;
-	}
-
-	private String getAccessToken() {
-		if(accessToken == null) {
-			logger.debug("Requesting access token");
-			requestAccessToken();
-		} else {
-			logger.debugv("Current access_token expires at {0} / Current time {1}", tokenExpiresAt, new Date());
-			if( tokenExpiresAt.before( new Date())) {
-				logger.debug("Refreshing access token");
-				try {
-					refreshAccessToken();
-				}
-				catch(ForkFlowException re) {
-					logger.error("Error refreshing access token. Trying to generate a new one", re);
-					requestAccessToken();
-				}
-			}
-		}
-		return accessToken;
-	}
-
-	private void requestAccessToken() {
-		logger.infov("Current client_id: {0}", configuration.getOauthClientId());
-		logger.infov("Requesting access_token to consume Rest User API: {0}", configuration.getOauthTokenEndpoint());
-		HttpPost httpPost = new HttpPost(configuration.getOauthTokenEndpoint());
-		httpPost.setHeader(CONTENT_TYPE, APPLICATION_FORM_URLENCODED.getMimeType());
-
-		List<NameValuePair> form = new ArrayList<>();
-		form.add(new BasicNameValuePair("grant_type", "client_credentials"));
-		form.add(new BasicNameValuePair("client_id", configuration.getOauthClientId()));
-		form.add(new BasicNameValuePair("client_secret", configuration.getOauthClientSecret()));
-		form.add(new BasicNameValuePair("scope", configuration.getOauthScope()));
-		httpPost.setEntity(new UrlEncodedFormEntity(form, UTF_8));
-
-		SimpleHttpResponse response = executeCall(httpPost);
-		stopOnError(response);
-		JsonObject jsonResponse = response.getResponseAsJsonObject();
-		this.accessToken = jsonResponse.getString("access_token");
-		this.refreshToken = jsonResponse.getString("refresh_token");
-		this.tokenExpiresAt = new Date(currentTimeMillis() + jsonResponse.getInt("expires_in") * 1000);
-	}
-
-	private void refreshAccessToken() {
-		logger.infov("Refreshing access_token to consume Rest User API: {0}", configuration.getOauthTokenEndpoint());
-		HttpPost httpPost = new HttpPost(configuration.getOauthTokenEndpoint());
-		httpPost.setHeader(CONTENT_TYPE, APPLICATION_FORM_URLENCODED.getMimeType());
-
-		List<NameValuePair> form = new ArrayList<>();
-		form.add(new BasicNameValuePair("grant_type", "refresh_token"));
-		form.add(new BasicNameValuePair("client_id", configuration.getOauthClientId()));
-		form.add(new BasicNameValuePair("client_secret", configuration.getOauthClientSecret()));
-		form.add(new BasicNameValuePair("refresh_token", refreshToken));
-		UrlEncodedFormEntity entity = new UrlEncodedFormEntity(form, UTF_8);
-		httpPost.setEntity(entity);
-
-		SimpleHttpResponse response = executeCall(httpPost);
-		stopOnError(response);
-		JsonObject jsonResponse = response.getResponseAsJsonObject();
-		this.accessToken = jsonResponse.getString("access_token");
-		this.refreshToken = jsonResponse.getString("refresh_token");
-		this.tokenExpiresAt = new Date(currentTimeMillis() + jsonResponse.getInt("expires_in") * 1000);
 	}
 
 	private void stopOnError(SimpleHttpResponse response) {
